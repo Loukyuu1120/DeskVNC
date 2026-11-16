@@ -1,0 +1,141 @@
+name: Windows installer (fork build)
+
+# An unsigned Windows installer from this fork, published as a pre-release.
+#
+# The main Release workflow refuses to ship an unsigned Windows build on a
+# tag, which is right for the upstream project but leaves a fork with no
+# way to hand out a test build. This one builds the same installers the
+# same way (NASM, dvv sidecar, tauri-action, `--locked`), skips signing, and
+# attaches the .exe and .msi to a pre-release named after the tag.
+#
+#   workflow_dispatch   build and keep the installers as a workflow artifact;
+#                       with release_tag set, also tag the built commit and
+#                       publish a pre-release carrying them
+#   push tag fork-v*    the same, with the pushed tag
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a pre-release under this tag (for example fork-v0.36.4-sharp.1). Empty keeps the installers as a workflow artifact only."
+        type: string
+        default: ""
+  push:
+    tags: ["fork-v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Link the C runtime statically, as release.yml does, so the exe starts on
+  # a Windows without the Visual C++ redistributable.
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+
+jobs:
+  build:
+    name: Windows (x64 installer, unsigned)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install NASM for the vendored OpenSSL
+        shell: bash
+        run: |
+          choco install nasm -y
+          echo "OPENSSL_RUST_USE_NASM=1" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-11-07
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Build the dvv sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p dvv --target "$TARGET"
+          mkdir -p src-tauri/binaries
+          cp "target/$TARGET/release/dvv.exe" "src-tauri/binaries/dvv-$TARGET.exe"
+          "src-tauri/binaries/dvv-$TARGET.exe" version
+
+      - name: Verify the source is clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          test -z "$(git status --porcelain)"
+
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          TAURI_APP_PATH: src-tauri
+          TAURI_FRONTEND_PATH: ui
+          DESKVNC_REQUIRE_CLEAN: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target x86_64-pc-windows-msvc --config src-tauri/tauri.release.conf.json -- --locked
+
+      - name: Collect the installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/$TARGET/release/bundle/nsis/*.exe dist/
+          cp target/$TARGET/release/bundle/msi/*.msi dist/
+          (cd dist && sha256sum * | tee SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-unsigned
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish a pre-release
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<'NOTES'
+          Unsigned Windows test build from this fork ("sharp picture" branch).
+
+          SmartScreen will warn once because the installer carries no
+          certificate: choose **More info**, then **Run anyway**. Verify the
+          download against `SHA256SUMS.txt` if you want to be sure of it.
+
+          What this build changes against upstream:
+          - Pixel-exact display: the picture snaps to whole device pixels at
+            1:1 and whole-number zooms, with a new **Pixels** setting under
+            the scale menu (auto / exact when magnified / always smooth).
+          - A Mac keeps the colour depth it opened with, so the remembered
+            quality now reaches the connection itself and a "Sharp" host
+            opens at full colour instead of 16-bit.
+          - The status panel shows **Colour depth** and **Drawn at** (scale,
+            exact or smoothed, display scaling) next to the encoding.
+          NOTES
+          # `--target` makes gh create the tag at the built commit when a
+          # hand run names a tag that does not exist yet.
+          gh release create "$RELEASE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "DeskVNCViewer $RELEASE_TAG (Windows, unsigned)" \
+            --notes-file notes.md \
+            --prerelease
