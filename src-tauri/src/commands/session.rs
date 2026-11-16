@@ -1179,6 +1179,14 @@ pub async fn connect_session(
     // profile, which is what a fixed resolution wants anyway.
     viewport_width: Option<u16>,
     viewport_height: Option<u16>,
+    // The quality preset the view remembers for this computer, when it has
+    // one, in the UI's own spelling (`auto`, `high`, ..., `black-and-white`).
+    // It wins over the profile's `quality_pref` because it is the more recent
+    // thing the person did, and it has to be known at connect time: the
+    // colour depth is negotiated once, before the first update, and on a
+    // server without Fence (every Mac) it cannot change afterwards. Absent
+    // from an older webview, which keeps the profile's answer.
+    quality: Option<String>,
     on_event: Channel<InvokeResponseBody>,
 ) -> Result<SessionConnectOutcome, String> {
     let id = match session_id {
@@ -1268,6 +1276,9 @@ pub async fn connect_session(
         options.quality = parse_quality(&profile.quality_pref);
         options.view_only = profile.view_only;
         ssh_tunnel_raw = profile.ssh_tunnel.clone();
+    }
+    if let Some(remembered) = quality.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        options.quality = parse_quality(remembered);
     }
 
     // The protocol specific half.

@@ -39,7 +39,7 @@ import { emit } from "@tauri-apps/api/event";
 import { EDIT_HOST_EVENT } from "../lib/editHost";
 import { Dialog } from "../components/primitives";
 import { detectMonitors, type MonitorRect } from "../render/seams";
-import type { QualityPreset, ScalingMode, SessionState, SshTunnelSettings } from "../lib/types";
+import type { PixelFilter, QualityPreset, ScalingMode, SessionState, SshTunnelSettings } from "../lib/types";
 import { parseSshTunnel, sideChannelLogin } from "../lib/types";
 import {
   buildDisplayOptions,
@@ -338,6 +338,7 @@ function SessionView({
   const resolutionRef = useRef<RdpResolution | null>(null);
   resolutionRef.current = resolution;
   const [zoom, setZoomState] = useState(stored.zoom);
+  const [pixelFilter, setPixelFilterState] = useState<PixelFilter>(stored.pixelFilter);
   const [quality, setQualityState] = useState<QualityPreset>(stored.quality);
   const [bwLevels, setBwLevelsState] = useState(stored.bwLevels);
   /**
@@ -825,6 +826,10 @@ function SessionView({
     rendererRef.current?.setZoom(zoom);
   }, [zoom]);
 
+  useEffect(() => {
+    rendererRef.current?.setPixelFilter(pixelFilter);
+  }, [pixelFilter]);
+
   /**
    * Monitor detection: when the server sends no layout, read the current
    * frame for two side by side monitors and each one's real rectangle (see
@@ -1043,6 +1048,7 @@ function SessionView({
     const next: ViewPrefs = {
       scalingMode,
       zoom,
+      pixelFilter,
       quality,
       bwLevels,
       alwaysRefresh,
@@ -1065,6 +1071,7 @@ function SessionView({
     prefsKey,
     scalingMode,
     zoom,
+    pixelFilter,
     quality,
     bwLevels,
     alwaysRefresh,
@@ -2073,6 +2080,9 @@ function SessionView({
           boundaryRoute={session.boundaryRoute}
           scalingMode={scalingMode}
           zoom={zoom}
+          pixelFilter={pixelFilter}
+          onPixelFilter={setPixelFilterState}
+          renderInfo={() => rendererRef.current?.renderInfo() ?? null}
           quality={quality}
           bwLevels={bwLevels}
           passthrough={passthrough}
@@ -2124,7 +2134,12 @@ function SessionView({
       {connectionInfoOpen ? (
         <Dialog title="Connection info" onClose={() => setConnectionInfoOpen(false)} width={360}>
           <div className="p-4">
-            <SessionStatusDetails stats={session.stats} desktopName={session.desktopName} route={session.boundaryRoute} />
+            <SessionStatusDetails
+              stats={session.stats}
+              desktopName={session.desktopName}
+              route={session.boundaryRoute}
+              render={rendererRef.current?.renderInfo() ?? null}
+            />
             <div className="mt-4 flex justify-end">
               <button
                 type="button"

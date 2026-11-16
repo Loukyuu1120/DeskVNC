@@ -18,13 +18,19 @@
  * applied on top once the session is up, because it is the more recent thing
  * the user actually did.
  */
-import type { QualityPreset, ScalingMode } from "./types";
+import type { PixelFilter, QualityPreset, ScalingMode } from "./types";
 import type { DisplayChoice } from "./displays";
 
 export interface ViewPrefs {
   scalingMode: ScalingMode;
   /** Only consulted while `scalingMode` is "custom". */
   zoom: number;
+  /**
+   * How remote pixels are resampled onto the screen: nearest neighbour at
+   * whole-number scales, forced whenever magnifying, or always bilinear.
+   * See `render/WebGLRenderer`'s `PixelFilter`.
+   */
+  pixelFilter: PixelFilter;
   quality: QualityPreset;
   /** Gray levels for the black-and-white preset. */
   bwLevels: number;
@@ -45,6 +51,7 @@ export interface ViewPrefs {
 export const FACTORY_DEFAULTS: ViewPrefs = {
   scalingMode: "aspect-fit",
   zoom: 1,
+  pixelFilter: "auto",
   quality: "auto",
   bwLevels: 16,
   alwaysRefresh: false,
@@ -58,6 +65,7 @@ const HOST_PREFIX = "deskvnc.view.";
 
 const SCALING_MODES: ScalingMode[] = ["fit", "aspect-fit", "actual", "custom", "remote-resize"];
 const QUALITY_PRESETS: QualityPreset[] = ["auto", "high", "medium", "low", "bw"];
+const PIXEL_FILTERS: PixelFilter[] = ["auto", "sharp", "smooth"];
 const GRAY_LEVELS = [256, 16, 8, 4, 2, 1];
 
 function read<T>(key: string): Partial<T> | null {
@@ -111,6 +119,9 @@ function sanitize(base: ViewPrefs, raw: Partial<ViewPrefs> | null): ViewPrefs {
     // The toolbar's slider runs 25% to 400%; anything outside that came from
     // somewhere other than the UI.
     zoom: Math.min(Math.max(num(raw.zoom, base.zoom), 0.25), 4),
+    pixelFilter: PIXEL_FILTERS.includes(raw.pixelFilter as PixelFilter)
+      ? (raw.pixelFilter as PixelFilter)
+      : base.pixelFilter,
     quality: QUALITY_PRESETS.includes(raw.quality as QualityPreset)
       ? (raw.quality as QualityPreset)
       : base.quality,
@@ -203,6 +214,7 @@ export function sameViewPrefs(a: ViewPrefs, b: ViewPrefs): boolean {
     sameDisplay &&
     a.scalingMode === b.scalingMode &&
     a.zoom === b.zoom &&
+    a.pixelFilter === b.pixelFilter &&
     a.quality === b.quality &&
     a.bwLevels === b.bwLevels &&
     a.alwaysRefresh === b.alwaysRefresh &&

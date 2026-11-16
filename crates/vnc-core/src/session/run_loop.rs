@@ -2495,6 +2495,19 @@ impl RunLoop {
         // agent's mirror asks for, a 4K Mac sent three small updates and then
         // nothing for 40 s, so the refresh the mirror waited for never came.
         if self.apple.is_some() {
+            // Nor can the colour depth move: the Mac has no Fence, so there
+            // is no safe point at which to switch the decoder. Say so once
+            // rather than let a "Sharp" chosen mid session look ignored; the
+            // depth the session opened with is the one it keeps, and
+            // `connect_session` chooses it from the remembered preset.
+            let wanted = wire_format(qs.pixel_format, QualityPreset::Auto, &self.caps);
+            if wanted != self.pf {
+                tracing::info!(
+                    have = self.pf.bits_per_pixel,
+                    want = wanted.bits_per_pixel,
+                    "a Mac keeps the colour depth it opened with; reconnect to change it"
+                );
+            }
             return Ok(());
         }
         let encodings = crate::quality::encodings_for(&qs, &self.caps);
@@ -2805,6 +2818,8 @@ impl RunLoop {
             rects_decoded: self.rects_decoded,
             current_encoding: self.current_encoding,
             jpeg_quality: self.applied_quality.jpeg_quality,
+            bits_per_pixel: self.pf.bits_per_pixel,
+            true_colour: self.pf.true_colour,
         };
 
         if self.trace.enabled {

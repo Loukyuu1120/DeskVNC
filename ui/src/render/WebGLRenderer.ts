@@ -30,6 +30,22 @@ import { annexBUnits, avcConfig, toLengthPrefixed } from "./avc";
 
 export type RendererScalingMode = "fit" | "aspect-fit" | "actual" | "custom";
 
+/**
+ * How remote pixels are resampled onto device pixels.
+ *
+ * - `auto`: nearest neighbour whenever one remote pixel maps onto a whole
+ *   number of device pixels (1:1, 2:1, ...), bilinear otherwise. At an
+ *   integer scale nearest is exact and bilinear only blends neighbouring
+ *   texels across the edge of every glyph, which is what made text look
+ *   soft; at a fractional scale nearest would give pixels of uneven width,
+ *   and when shrinking it drops texels and text goes jagged, so those keep
+ *   the smooth filter.
+ * - `sharp`: nearest neighbour whenever the picture is magnified, whatever
+ *   the ratio. Shrinking still filters: there is no sharp way to shrink.
+ * - `smooth`: always bilinear, the old behaviour.
+ */
+export type PixelFilter = "auto" | "sharp" | "smooth";
+
 export interface ContentTransform {
   /** top-left of the content in device pixels */
   x: number;
@@ -37,6 +53,62 @@ export interface ContentTransform {
   /** device pixels per framebuffer pixel */
   scaleX: number;
   scaleY: number;
+}
+
+/**
+ * Where a `w` by `h` remote rect goes in a `W` by `H` canvas at the given
+ * scale and pan: centred, then moved by the pan.
+ *
+ * At a whole-number scale the origin is snapped to a whole device pixel, so
+ * remote pixels and device pixels line up. Centring an odd remainder used to
+ * leave the origin at a half pixel, and at 1:1 the bilinear sampler then
+ * read every screen pixel as the mean of two neighbours: "Actual size" was
+ * still a resample, which is where the soft text came from whenever the
+ * desktop and the window differed by an odd number of pixels. A pure
+ * function so the rule is testable without a GL context.
+ */
+export function placeContent(
+  W: number,
+  H: number,
+  w: number,
+  h: number,
+  sx: number,
+  sy: number,
+  panX: number,
+  panY: number,
+): ContentTransform {
+  let x = (W - w * sx) / 2 - panX;
+  let y = (H - h * sy) / 2 - panY;
+  if (isIntegerScale(sx) && isIntegerScale(sy)) {
+    x = Math.round(x);
+    y = Math.round(y);
+  }
+  return { x, y, scaleX: sx, scaleY: sy };
+}
+
+/**
+ * Whether `scale` maps each remote pixel onto a whole number of device
+ * pixels. Tolerant of float noise from a fit computation that lands on an
+ * exact ratio (a 1920 wide desktop in a 3840 wide canvas is 2 by division,
+ * but the pan arithmetic can leave it at 1.9999999).
+ */
+export function isIntegerScale(scale: number): boolean {
+  return scale >= 1 && Math.abs(scale - Math.round(scale)) < 1e-6;
+}
+
+/**
+ * The resampling actually used for `scale` under `filter`: true for nearest
+ * neighbour. Exported so the status panel can say which one is in effect.
+ */
+export function usesNearest(filter: PixelFilter, scaleX: number, scaleY: number): boolean {
+  switch (filter) {
+    case "smooth":
+      return false;
+    case "sharp":
+      return scaleX >= 1 && scaleY >= 1;
+    case "auto":
+      return isIntegerScale(scaleX) && isIntegerScale(scaleY);
+  }
 }
 
 const VS = `#version 300 es
@@ -541,6 +613,9 @@ export class WebGLRenderer {
 
   // grayscale
   private grayLevels = 0; // 0 = color
+  private filter: PixelFilter = "auto";
+  /** The MAG filter last written to `frameTex`, so `draw` writes it only on change. */
+  private frameMagNearest = false;
 
   // H.264 (WebCodecs): one decoder per server-side context, keyed by the
   // context id the backend assigns per rect geometry (0..63).
@@ -1466,13 +1541,34 @@ export class WebGLRenderer {
         sy = this.zoom;
         break;
     }
-    const cw = v.w * sx;
-    const ch = v.h * sy;
+    return placeContent(W, H, v.w, v.h, sx, sy, this.panX, this.panY);
+  }
+
+  /** See {@link PixelFilter}. */
+  setPixelFilter(filter: PixelFilter): void {
+    if (filter === this.filter) return;
+    this.filter = filter;
+    this.markDirty();
+  }
+
+  getPixelFilter(): PixelFilter {
+    return this.filter;
+  }
+
+  /**
+   * What the picture is being drawn with right now, for the status panel:
+   * device pixels per remote pixel on each axis and whether the resampling
+   * is nearest neighbour (exact) or bilinear.
+   */
+  renderInfo(): { scaleX: number; scaleY: number; nearest: boolean; dpr: number } {
+    const t = this.contentTransform();
+    const rect = this.canvas.getBoundingClientRect();
+    const dpr = rect.width > 0 ? this.canvas.width / rect.width : 1;
     return {
-      x: (W - cw) / 2 - this.panX,
-      y: (H - ch) / 2 - this.panY,
-      scaleX: sx,
-      scaleY: sy,
+      scaleX: t.scaleX,
+      scaleY: t.scaleY,
+      nearest: usesNearest(this.filter, t.scaleX, t.scaleY),
+      dpr,
     };
   }
 
@@ -1553,6 +1649,14 @@ export class WebGLRenderer {
     // texture unless a monitor view is set)
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.frameTex);
+    // Only the MAG filter changes: it is the one used while magnifying (and
+    // at 1:1), where nearest is exact. MIN stays LINEAR so shrinking keeps
+    // averaging texels instead of dropping them.
+    const nearest = usesNearest(this.filter, t.scaleX, t.scaleY);
+    if (nearest !== this.frameMagNearest) {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, nearest ? gl.NEAREST : gl.LINEAR);
+      this.frameMagNearest = nearest;
+    }
     gl.uniform1f(this.uLevels, this.grayLevels);
     gl.uniform1f(this.uTexAlpha, 0); // framebuffer is opaque
     gl.uniform4f(this.uUv, v.x / fw, v.y / fh, v.w / fw, v.h / fh);

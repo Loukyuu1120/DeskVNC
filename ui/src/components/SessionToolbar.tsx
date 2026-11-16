@@ -15,6 +15,7 @@ import {
 import type {
   BoundaryRoute,
   DisplayOption,
+  PixelFilter,
   ProtocolKind,
   QualityPreset,
   ScalingMode,
@@ -127,6 +128,15 @@ export interface SessionToolbarProps {
   boundaryRoute?: BoundaryRoute | null;
   scalingMode: ScalingMode;
   zoom: number;
+  pixelFilter: PixelFilter;
+  onPixelFilter: (f: PixelFilter) => void;
+  /**
+   * What the renderer is drawing with right now, read when the status panel
+   * opens: it is derived from the canvas and the scaling mode, not from
+   * anything the session reports, so it is a function rather than a prop
+   * that would have to be re-derived on every stats tick.
+   */
+  renderInfo?: () => RenderInfo | null;
   quality: QualityPreset;
   bwLevels: number;
   passthrough: boolean;
@@ -813,7 +823,12 @@ export function SessionToolbar(props: SessionToolbarProps): ReactNode {
         >
           {openMenu === "status" ? (
             <div className="w-60 px-2.5 py-1.5">
-              <SessionStatusDetails stats={props.stats} desktopName={props.desktopName} route={props.boundaryRoute ?? null} />
+              <SessionStatusDetails
+                stats={props.stats}
+                desktopName={props.desktopName}
+                route={props.boundaryRoute ?? null}
+                render={props.renderInfo?.() ?? null}
+              />
             </div>
           ) : null}
           {openMenu === "scale" ? (
@@ -868,6 +883,18 @@ export function SessionToolbar(props: SessionToolbarProps): ReactNode {
               <MenuRow selected={props.edgePan} onClick={() => props.onEdgePan(!props.edgePan)}>
                 Pan by moving to edges
               </MenuRow>
+              <div className="mt-1 border-t border-subtle pt-1">
+                <p className="px-2.5 py-1 text-2xs uppercase tracking-wide text-tertiary">Pixels</p>
+                {(["auto", "sharp", "smooth"] as PixelFilter[]).map((f) => (
+                  <MenuRow key={f} selected={props.pixelFilter === f} onClick={() => props.onPixelFilter(f)}>
+                    {filterLabel(f)}
+                  </MenuRow>
+                ))}
+                <p className="px-2.5 pb-1 text-2xs text-tertiary">
+                  Exact copies each remote pixel at 1:1 and whole-number zooms;
+                  shrinking always blends, so small text does not go jagged.
+                </p>
+              </div>
             </div>
           ) : null}
           {openMenu === "pointer" ? (
@@ -1147,6 +1174,48 @@ function CaptureStatusNote({
   );
 }
 
+function filterLabel(f: PixelFilter): string {
+  switch (f) {
+    case "auto":
+      return "Exact when it fits (auto)";
+    case "sharp":
+      return "Exact whenever magnified";
+    case "smooth":
+      return "Always smooth";
+  }
+}
+
+/** What `WebGLRenderer.renderInfo()` reports, for the status panel. */
+export interface RenderInfo {
+  scaleX: number;
+  scaleY: number;
+  nearest: boolean;
+  dpr: number;
+}
+
+/**
+ * The colour depth in words a person can compare with another client's
+ * readout: "32-bit" against RealVNC's "Full", "16-bit" against "Medium".
+ */
+export function depthWords(stats: SessionStats): string {
+  const bpp = stats.bits_per_pixel ?? 0;
+  if (bpp === 0) return "-";
+  if (!stats.true_colour) return `${bpp}-bit palette`;
+  // 32 bits on the wire carry 24 bits of colour; say what the picture has.
+  return bpp === 32 ? "24-bit (full)" : `${bpp}-bit`;
+}
+
+/** "100%" for 1:1, "2×" for an integer zoom, "83%" for a fit. */
+export function scaleWords(r: RenderInfo): string {
+  const same = Math.abs(r.scaleX - r.scaleY) < 1e-6;
+  const one = (s: number): string =>
+    Math.abs(s - Math.round(s)) < 1e-6 && s >= 1 ? `${Math.round(s)}×` : `${Math.round(s * 100)}%`;
+  const scale = same ? one(r.scaleX) : `${one(r.scaleX)} × ${one(r.scaleY)}`;
+  const filter = r.nearest ? "exact" : "smoothed";
+  const dpr = Math.abs(r.dpr - 1) < 1e-3 ? "" : `, display ${Math.round(r.dpr * 100)}%`;
+  return `${scale}, ${filter}${dpr}`;
+}
+
 function scaleLabel(m: ScalingMode): string {
   switch (m) {
     case "fit":
@@ -1250,10 +1319,13 @@ export function SessionStatusDetails({
   stats,
   desktopName,
   route = null,
+  render = null,
 }: {
   stats: SessionStats | null;
   desktopName: string;
   route?: BoundaryRoute | null;
+  /** The renderer's own figures, when the caller has a renderer to ask. */
+  render?: RenderInfo | null;
 }): ReactNode {
   return (
     <div className="text-sm">
@@ -1278,6 +1350,14 @@ export function SessionStatusDetails({
           <dd className="tabular-nums text-primary">{stats.decode_ms.toFixed(1)} ms</dd>
           <dt className="text-tertiary">Encoding</dt>
           <dd className="mono text-primary">{encodingName(stats.current_encoding)}</dd>
+          <dt className="text-tertiary">Colour depth</dt>
+          <dd className="tabular-nums text-primary">{depthWords(stats)}</dd>
+          {render ? (
+            <>
+              <dt className="text-tertiary">Drawn at</dt>
+              <dd className="tabular-nums text-primary">{scaleWords(render)}</dd>
+            </>
+          ) : null}
           <dt className="text-tertiary">Received</dt>
           <dd className="tabular-nums text-primary">{(stats.bytes_received / 1e6).toFixed(1)} MB</dd>
         </dl>
@@ -1300,6 +1380,7 @@ function encodingName(enc: number): string {
     case 2: return "RRE";
     case 5: return "Hextile";
     case 7: return "Tight";
+    case 6: return "Zlib";
     case 16: return "ZRLE";
     case 50: return "H.264";
     default: return `#${enc}`;

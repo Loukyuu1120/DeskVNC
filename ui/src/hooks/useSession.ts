@@ -45,6 +45,7 @@ import type {
   SessionStats,
 } from "../lib/types";
 import { DEFAULT_PORT, isProtocolKind } from "../lib/types";
+import { readViewPrefs, viewPrefsKey } from "../lib/viewPrefs";
 
 export interface SessionBridge {
   onFrame: (msg: FrameMessage) => void;
@@ -620,6 +621,13 @@ export function useSession(
           ignoreStoredCredentials: repromptRef.current,
           // Answers a previous ssh-host-key-prompt outcome, once.
           acceptSshHostKey,
+          // The quality this computer was last set to, so the connection
+          // OPENS with it. The view re-asserts it once connected, but by then
+          // the colour depth is settled: a Mac has no Fence, so the depth it
+          // opened with is the one it keeps, and a large Mac screen opened
+          // under Auto sits at 16-bit colour however often "Sharp" is picked
+          // afterwards.
+          quality: wireQuality(readViewPrefs(viewPrefsKey(params)).quality),
           // The viewport in physical pixels, so an RDP session can ask for a
           // desktop that fits rather than the specification's 1024 by 768.
           // The canvas is not mounted yet at this point, so the measurement

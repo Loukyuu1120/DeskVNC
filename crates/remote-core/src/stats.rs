@@ -75,4 +75,14 @@ pub struct SessionStats {
     pub rects_decoded: u64,
     pub current_encoding: i32,
     pub jpeg_quality: u8,
+    /// Bits per pixel of the wire format the session is decoding (8, 16 or
+    /// 32), 0 when the protocol has no single answer. Reported so a person
+    /// can tell a 16-bit session apart from a full-colour one: the two look
+    /// alike at a glance and feel alike, and a Mac that started at 16 bits
+    /// stays there however the quality preset is changed afterwards.
+    #[serde(default)]
+    pub bits_per_pixel: u8,
+    /// Whether that format is true colour rather than a palette.
+    #[serde(default)]
+    pub true_colour: bool,
 }

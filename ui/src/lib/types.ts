@@ -89,6 +89,8 @@ export type NameSource =
   | "rdp-cert";
 export type QualityPreset = "auto" | "high" | "medium" | "low" | "bw";
 export type ScalingMode = "fit" | "aspect-fit" | "actual" | "custom" | "remote-resize";
+/** Webview-only; see `render/WebGLRenderer`'s `PixelFilter`. */
+export type PixelFilter = "auto" | "sharp" | "smooth";
 export type SecurityLevel = "verified" | "unverified" | "unencrypted" | "unknown";
 
 /**
@@ -598,6 +600,13 @@ export interface SessionStats {
   rects_decoded: number;
   current_encoding: number;
   jpeg_quality: number;
+  /**
+   * The wire pixel format the session is decoding: bits per pixel (8, 16 or
+   * 32) and whether it is true colour or a palette. Both `#[serde(default)]`
+   * in Rust and optional here, so a shell that predates them reads as 0.
+   */
+  bits_per_pixel?: number;
+  true_colour?: boolean;
 }
 
 /** `vnc_core::CredentialKind`, serde `rename_all = "kebab-case"`. */
